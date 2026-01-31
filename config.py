@@ -12,8 +12,6 @@ SYNC_START_DATE = os.getenv("SYNC_START_DATE")
 INCOME_DESCRIPTION_TEMPLATE = os.getenv("INCOME_DESCRIPTION_TEMPLATE", "Платеж #{description}")
 CRON_SCHEDULE = os.getenv("CRON_SCHEDULE", "0 */4 * * *")
 
-STATE_FILE = "sync_state.json"
-
 def validate_config():
     required_vars = [
         ("YOOKASSA_SHOP_ID", YOOKASSA_SHOP_ID),

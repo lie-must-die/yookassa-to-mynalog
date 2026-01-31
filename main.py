@@ -9,11 +9,15 @@ from yookassa import Configuration, Payment
 from tenacity import retry, stop_after_attempt, wait_exponential
 import config
 
+LOG_DIR = "logs"
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("sync.log", encoding='utf-8'),
+        logging.FileHandler(f"{LOG_DIR}/sync.log", encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -132,7 +136,7 @@ class MoyNalogAPI:
         try:
             response = await self.client.post(url, json=payload, headers=headers)
             
-            if response.status_code == 401: # Токен истек
+            if response.status_code == 401:
                 logging.warning("Токен истек, обновляем...")
                 try:
                     await self.authenticate()
@@ -165,7 +169,7 @@ class SyncManager:
         
         Configuration.configure(config.YOOKASSA_SHOP_ID, config.YOOKASSA_API_KEY)
         self.nalog = MoyNalogAPI(config.MOY_NALOG_LOGIN, config.MOY_NALOG_PASSWORD)
-        self.state_file = config.STATE_FILE
+        self.state_file = f"{LOG_DIR}/sync_state.json"
         self.state = self.load_state()
 
     def load_state(self):
