@@ -75,7 +75,9 @@ sudo nano .env
 | `{description}` | Описание платежа из ЮKassa, либо ID платежа если описания нет |
 | `{id}` | ID платежа в ЮKassa (UUID) |
 | `{payment_description}` | Только описание платежа (пустая строка, если описания нет) |
-| `{invoice_id}` | Номер счёта из ЮKassa (пустая строка, если счёт не привязан) |
+| `{order_number}` | Номер счёта/заказа из ЮKassa (например: `1227418-1`) |
+| `{invoice_id}` | ID счёта из invoice_details API (пустая строка, если нет) |
+| `{customer_name}` | Название/имя из счёта ЮKassa |
 | `{amount}` | Сумма платежа |
 | `{merchant_customer_id}` | ID покупателя в вашей системе |
 
@@ -83,7 +85,8 @@ sudo nano .env
 
 ```env
 INCOME_DESCRIPTION_TEMPLATE='Платеж #{description}'                                    # описание платежа, или ID если нет описания
-INCOME_DESCRIPTION_TEMPLATE='Оплата по счёту №{invoice_id}'                            # номер счёта из ЮKassa
+INCOME_DESCRIPTION_TEMPLATE='Оплата по счёту №{order_number}'                          # номер счёта из ЮKassa
+INCOME_DESCRIPTION_TEMPLATE='{customer_name} — счёт №{order_number}'                   # название + номер счёта
 INCOME_DESCRIPTION_TEMPLATE='Оплата услуг: {payment_description} ({amount} руб.)'      # описание + сумма
 INCOME_DESCRIPTION_TEMPLATE='Платеж {id}'                                              # ID платежа (UUID)
 ```
