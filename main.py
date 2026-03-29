@@ -5,7 +5,7 @@ import logging
 import httpx
 import hashlib
 from datetime import datetime, timedelta, timezone
-from yookassa import Configuration, Payment
+from yookassa import Configuration, Payment, Refund
 from tenacity import retry, stop_after_attempt, wait_exponential
 import config
 
@@ -126,7 +126,7 @@ class MoyNalogAPI:
                 await self.authenticate()
             except Exception as e:
                 logging.error(f"Не удалось авторизоваться: {e}")
-                return False
+                return None
 
         url = "https://lknpd.nalog.ru/api/v1/income"
         
@@ -172,16 +172,64 @@ class MoyNalogAPI:
                     response = await self.client.post(url, json=payload, headers=headers)
                 except Exception as e:
                     logging.error(f"Ошибка при переавторизации: {e}")
-                    return False
-            
+                    return None
+
             if response.status_code == 200:
-                logging.info(f"✓ Доход успешно зарегистрирован: {amount} руб. за '{name}'")
-                return True
+                data = response.json()
+                receipt_uuid = data.get("approvedReceiptUuid")
+                logging.info(f"✓ Доход успешно зарегистрирован: {amount} руб. за '{name}' (чек: {receipt_uuid})")
+                return receipt_uuid
             else:
                 logging.error(f"✗ Ошибка регистрации дохода (Код {response.status_code}): {response.text}")
-                return False
+                return None
         except Exception as e:
             logging.error(f"Исключение при регистрации дохода: {e}")
+            return None
+
+    async def cancel_income(self, receipt_uuid):
+        if not self.token:
+            try:
+                await self.authenticate()
+            except Exception as e:
+                logging.error(f"Не удалось авторизоваться: {e}")
+                return False
+
+        url = "https://lknpd.nalog.ru/api/v1/cancel"
+
+        now = datetime.now(timezone(timedelta(hours=11)))
+        iso_now = now.isoformat(timespec='seconds')
+
+        payload = {
+            "operationTime": iso_now,
+            "requestTime": iso_now,
+            "comment": "Возврат средств",
+            "receiptUuid": receipt_uuid
+        }
+
+        headers = self.headers.copy()
+        headers["Authorization"] = f"Bearer {self.token}"
+
+        try:
+            response = await self.client.post(url, json=payload, headers=headers)
+
+            if response.status_code == 401:
+                logging.warning("Токен истек, обновляем...")
+                try:
+                    await self.authenticate()
+                    headers["Authorization"] = f"Bearer {self.token}"
+                    response = await self.client.post(url, json=payload, headers=headers)
+                except Exception as e:
+                    logging.error(f"Ошибка при переавторизации: {e}")
+                    return False
+
+            if response.status_code == 200:
+                logging.info(f"✓ Чек {receipt_uuid} успешно аннулирован (возврат средств)")
+                return True
+            else:
+                logging.error(f"✗ Ошибка аннулирования чека {receipt_uuid} (Код {response.status_code}): {response.text}")
+                return False
+        except Exception as e:
+            logging.error(f"Исключение при аннулировании чека: {e}")
             return False
 
     async def close(self):
@@ -200,21 +248,36 @@ class SyncManager:
         self.state_file = f"{LOG_DIR}/sync_state.json"
         self.state = self.load_state()
 
+    def _ensure_state_fields(self, state):
+        defaults = {
+            "pending_payments": [],
+            "receipt_map": {},
+            "processed_refunds": [],
+            "last_refund_sync_time": None
+        }
+        for key, default in defaults.items():
+            if key not in state:
+                state[key] = default
+        return state
+
     def load_state(self):
         if os.path.exists(self.state_file):
             try:
                 with open(self.state_file, 'r') as f:
                     state = json.load(f)
-                if "pending_payments" not in state:
-                    state["pending_payments"] = []
-                return state
+                return self._ensure_state_fields(state)
             except:
                 pass
 
-        if config.SYNC_START_DATE:
-            return {"last_sync_time": f"{config.SYNC_START_DATE}T00:00:00Z", "processed_payments": [], "pending_payments": []}
-
-        return {"last_sync_time": (datetime.now() - timedelta(days=1)).isoformat(), "processed_payments": [], "pending_payments": []}
+        base = {
+            "last_sync_time": f"{config.SYNC_START_DATE}T00:00:00Z" if config.SYNC_START_DATE else (datetime.now() - timedelta(days=1)).isoformat(),
+            "processed_payments": [],
+            "pending_payments": [],
+            "receipt_map": {},
+            "processed_refunds": [],
+            "last_refund_sync_time": None
+        }
+        return base
 
     def save_state(self):
         with open(self.state_file, 'w') as f:
@@ -247,6 +310,32 @@ class SyncManager:
 
         return new_payments
 
+    async def get_new_refunds(self):
+        new_refunds = []
+        last_refund_sync = self.state.get("last_refund_sync_time") or self.state.get("last_sync_time")
+
+        params = {
+            "status": "succeeded",
+            "created_at.gte": last_refund_sync
+        }
+
+        try:
+            res = Refund.list(params)
+            for refund in res.items:
+                if refund.id not in self.state["processed_refunds"]:
+                    new_refunds.append(refund)
+
+            while res.next_cursor:
+                params["cursor"] = res.next_cursor
+                res = Refund.list(params)
+                for refund in res.items:
+                    if refund.id not in self.state["processed_refunds"]:
+                        new_refunds.append(refund)
+        except Exception as e:
+            logging.error(f"Ошибка получения возвратов ЮKassa: {e}")
+
+        return new_refunds
+
     async def sync(self):
         logging.info("="*60)
         logging.info("Начало синхронизации...")
@@ -259,16 +348,15 @@ class SyncManager:
         
         try:
             new_payments = await self.get_new_yookassa_payments()
-            
+
             if not new_payments:
                 logging.info("✓ Новых платежей не найдено.")
-                return
+            else:
+                logging.info(f"✓ Найдено новых платежей: {len(new_payments)}")
 
-            logging.info(f"✓ Найдено новых платежей: {len(new_payments)}")
-            
             successful = 0
             failed = 0
-            
+
             for payment in new_payments:
                 try:
                     amount = float(payment.amount.value)
@@ -280,11 +368,12 @@ class SyncManager:
                     self.state["pending_payments"].append(payment.id)
                     self.save_state()
 
-                    success = await self.nalog.add_income(description, amount, payment_date)
+                    receipt_uuid = await self.nalog.add_income(description, amount, payment_date)
 
                     self.state["pending_payments"].remove(payment.id)
-                    if success:
+                    if receipt_uuid:
                         self.state["processed_payments"].append(payment.id)
+                        self.state["receipt_map"][payment.id] = receipt_uuid
                         self.state["last_sync_time"] = payment.created_at
                         self.save_state()
                         successful += 1
@@ -297,7 +386,47 @@ class SyncManager:
                     failed += 1
                     logging.error(f"Ошибка при обработке платежа {payment.id}: {e}")
 
-            logging.info(f"Результат: успешно={successful}, ошибок={failed}")
+            if new_payments:
+                logging.info(f"Результат платежей: успешно={successful}, ошибок={failed}")
+
+            new_refunds = await self.get_new_refunds()
+
+            if new_refunds:
+                logging.info(f"✓ Найдено новых возвратов: {len(new_refunds)}")
+
+                cancelled = 0
+                cancel_failed = 0
+
+                for refund in new_refunds:
+                    try:
+                        receipt_uuid = self.state["receipt_map"].get(refund.payment_id)
+
+                        if not receipt_uuid:
+                            logging.warning(f"Возврат {refund.id}: чек для платежа {refund.payment_id} не найден в receipt_map, пропуск")
+                            self.state["processed_refunds"].append(refund.id)
+                            self.state["last_refund_sync_time"] = refund.created_at
+                            self.save_state()
+                            continue
+
+                        success = await self.nalog.cancel_income(receipt_uuid)
+
+                        if success:
+                            self.state["processed_refunds"].append(refund.id)
+                            self.state["last_refund_sync_time"] = refund.created_at
+                            del self.state["receipt_map"][refund.payment_id]
+                            self.save_state()
+                            cancelled += 1
+                        else:
+                            cancel_failed += 1
+                            logging.warning(f"Не удалось аннулировать чек {receipt_uuid} для возврата {refund.id}")
+                    except Exception as e:
+                        cancel_failed += 1
+                        logging.error(f"Ошибка при обработке возврата {refund.id}: {e}")
+
+                logging.info(f"Результат возвратов: аннулировано={cancelled}, ошибок={cancel_failed}")
+            else:
+                logging.info("✓ Новых возвратов не найдено.")
+
         except Exception as e:
             logging.error(f"Критическая ошибка при синхронизации: {e}", exc_info=True)
         finally:
