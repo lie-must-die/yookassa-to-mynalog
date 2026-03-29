@@ -130,7 +130,8 @@ class MoyNalogAPI:
                 return None
 
         url = "https://lknpd.nalog.ru/api/v1/income"
-        
+
+        date = date.astimezone()
         iso_date = date.isoformat(timespec='seconds')
         request_time = datetime.now().astimezone().isoformat(timespec='seconds')
         
