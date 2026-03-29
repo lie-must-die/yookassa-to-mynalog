@@ -83,6 +83,7 @@ sudo nano .env
 
 | Переменная | По умолчанию | Описание |
 |-----------|:----------:|---------|
+| `TZ` | `Europe/Moscow` | Часовой пояс контейнера ([список](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
 | `DEVICE_ID` | Генерация хеша из ИНН (21 символ) | Специальный ID, используемый для авторизации в "Мой Налог" |
 | `SYNC_START_DATE` | -24ч | Дата начала синхронизации (YYYY-MM-DD) |
 | `INCOME_DESCRIPTION_TEMPLATE` | `Платеж #{description}` | Шаблон описания дохода (см. ниже) |
